@@ -1,0 +1,16 @@
+{
+    "name": "your-vendor/my-plugin",
+    "description": "Minimal example plugin showing EDD-SL SDK integration.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "repositories": {
+        "edd-sl-sdk": {
+            "type": "vcs",
+            "url": "https://github.com/awesomemotive/edd-sl-sdk"
+        }
+    },
+    "require": {
+        "php": ">=7.4",
+        "easy-digital-downloads/edd-sl-sdk": "^1.0.3"
+    }
+}

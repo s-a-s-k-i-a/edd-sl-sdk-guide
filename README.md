@@ -225,6 +225,12 @@ add_filter( 'edd_sl_sdk_translate_string', function ( $string, $key, $text_domai
 | Update banner never appears even after store version bump | License not activated *yet* on this site (SDK doesn't bother checking versions for unlicensed installs in some configurations), OR plugin's installed version >= store's `new_version` | Activate license first, then `wp transient delete update_plugins` and re-check. |
 | Activation works once, then "no_activations_left" forever | License limit reached; previous deactivations weren't received | Reset site activations from your EDD admin (License Manager → reset). |
 
+## Pro Tips (when the basics aren't enough)
+
+If your distribution setup is unusual, see [`PRO_TIPS.md`](PRO_TIPS.md):
+
+- **Auto-localizing release ZIPs from a private GitHub repo** — when your source repo is private and EDD-SL can't follow the GitHub release URL without auth (the customer sees "download failed: Not Found"). Full automation via signed CI webhook + mu-plugin so `git push --tags` remains the entire release motion.
+
 ## Where This Fits in the EDD Ecosystem
 
 | Repo / Doc | What it is | When you need it |

@@ -116,6 +116,10 @@ If all three pass, the SDK is functional. The remaining "Manage License" UI is s
 6. **Never use the old `EDD_SL_Plugin_Updater.php` single-file approach for new work.** EDD officially recommends the SDK in their 2025 docs. Use the SDK.
 7. **Never assume the user's store URL or item ID.** Ask. The item ID is a post ID on the store (the EDD download post type); it is not derivable from the slug.
 
+## Distribution from a private GitHub repo
+
+If the source repo of the plugin you are integrating is **private** and the EDD store points its `edd_download_files[].file` at the GitHub release asset URL, customers will see a `"download failed: Not Found"` on every update click — EDD-SL's `package_download` proxy hits GitHub server-side without auth and gets 404. [`PRO_TIPS.md`](PRO_TIPS.md) §1 has a full recipe to fix this with a signed CI webhook + a small mu-plugin on the store side. Implement it whenever the source repo is private. Use the recipe verbatim — including the HMAC-SHA256 signature pattern and the `update_post_meta()` step the EDD Git Updater plugin omits.
+
 ## When the SDK isn't enough
 
 The SDK covers the standard licensing + auto-update workflow. If your product has unusual requirements, you may need to fall back to the [Software Licensing API](https://easydigitaldownloads.com/docs/software-licensing-api/) directly:

@@ -5,6 +5,7 @@ This file covers patterns the [main README](README.md) intentionally keeps out s
 ## Table of contents
 
 1. [Auto-localizing release ZIPs from a private GitHub repo](#1-auto-localizing-release-zips-from-a-private-github-repo)
+2. [Forcing a fresh update-check past the SDK's 3-hour cache](#2-forcing-a-fresh-update-check-past-the-sdks-3-hour-cache)
 
 ---
 
@@ -304,3 +305,134 @@ The cost is one `openssl dgst` invocation per release. Worth it.
 This pattern was deployed in production on 2026-05-24 for a private WordPress plugin distributed via a self-hosted EDD store. The full chain — `git push --tags` → GitHub Release → webhook → mu-plugin → `process()` → `update_post_meta()` → EDD-SL `get_version` → wrapped `package_download` → customer's WP installer — completes in ~20 seconds and serves a working ZIP to end users on the next update-check cycle.
 
 If you implement this recipe and it doesn't work end-to-end, please open an issue with the exact wp-cli / curl output you got at the failing step — the goal is to keep this recipe ground-truthed against reality.
+
+---
+
+## 2. Forcing a fresh update-check past the SDK's 3-hour cache
+
+### When you need this
+
+You just published a new release. The webhook pipeline from §1 (or your manual `wp eval-file` flow) confirms the store now serves the new version. You log into a customer's WordPress install, click around the Plugins screen, and… the old version is still listed as current. No update banner. Even after clicking "Check again" on `wp-admin/update-core.php`, nothing.
+
+### The trap
+
+The SDK caches `get_version` responses for **three hours by default** in a regular `wp_option` row — not a transient. The cache key is `edd_sl_<md5>`, with `md5` computed over `[plugin_slug, license_key, beta_flag]`. The TTL is set in [`src/Updaters/Updater.php`](https://github.com/awesomemotive/edd-sl-sdk/blob/main/src/Updaters/Updater.php) `get_timeout()`:
+
+```php
+private function get_timeout() {
+    return ! empty( $this->args['cache_timeout'] ) ? $this->args['cache_timeout'] : '+3 hours';
+}
+```
+
+So none of the following actually re-poll your store:
+
+| Action | Reaches SDK cache? |
+|---|---|
+| `wp transient delete update_plugins` | No. The SDK cache is an option, not a transient. |
+| Visit `wp-admin/update-core.php?force-check=1` ("Check again" link) | No. That only calls `wp_version_check()` (core), not plugin polls. Plugin polls then hit the SDK cache and short-circuit. |
+| Manually triggering the `wp_update_plugins` cron event | No. Runs `wp_update_plugins()` *without* `$force_check = true`. SDK cache still wins. |
+| `wp_update_plugins( array(), true )` from PHP | Partial. WP would fetch fresh from the SDK's filter, but the SDK still answers from its own cache. |
+
+The only thing that actually busts the cache is **deleting the `edd_sl_*` option row** for your plugin.
+
+### Three layers to flush, in order
+
+```php
+global $wpdb;
+
+// 1. SDK's own get_version cache. THE one that's blocking you.
+$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'edd_sl\\_%'" );
+
+// 2. WordPress's own plugin update transient.
+delete_site_transient( 'update_plugins' );
+
+// 3. Force WordPress to re-poll every plugin update server right now.
+wp_update_plugins( array(), true );
+```
+
+Run those three lines in order. The admin's next page load shows the new version.
+
+### Where to put it
+
+#### Option A — A button in your plugin's settings page
+
+The most user-friendly answer. Visitors of the plugin you're shipping shouldn't need to know about the SDK cache at all.
+
+```php
+// register hook
+add_action( 'admin_post_my_plugin_force_update_check', 'my_plugin_force_update_check' );
+
+// nonce-safe URL helper for the button href
+function my_plugin_force_update_check_url(): string {
+    return wp_nonce_url(
+        admin_url( 'admin-post.php?action=my_plugin_force_update_check' ),
+        'my_plugin_force_update_check'
+    );
+}
+
+// handler
+function my_plugin_force_update_check(): void {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( '', '', 403 );
+    }
+    check_admin_referer( 'my_plugin_force_update_check' );
+
+    global $wpdb;
+    $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'edd_sl\\_%'" );
+    delete_site_transient( 'update_plugins' );
+    wp_update_plugins( array(), true );
+
+    wp_safe_redirect( wp_get_referer() ?: admin_url() );
+    exit;
+}
+```
+
+Render the button:
+
+```php
+<a href="<?php echo esc_url( my_plugin_force_update_check_url() ); ?>" class="button">
+    Check for plugin updates now
+</a>
+```
+
+#### Option B — A one-shot mu-plugin admins can drop in temporarily
+
+For when the customer install isn't running your plugin (or running a version too old to have the button). Save as `wp-content/mu-plugins/force-edd-sl-refresh.php`, visit `https://customer-site.example/wp-admin/?force_edd_sl_refresh=1`, then delete the file.
+
+```php
+<?php
+add_action( 'admin_init', function () {
+    if ( ! current_user_can( 'manage_options' ) ) return;
+    if ( empty( $_GET['force_edd_sl_refresh'] ) ) return;
+    global $wpdb;
+    $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'edd_sl\\_%'" );
+    delete_site_transient( 'update_plugins' );
+    wp_update_plugins( array(), true );
+    wp_safe_redirect( admin_url( 'plugins.php' ) );
+    exit;
+} );
+```
+
+#### Option C — wp-cli for admins with shell access
+
+```bash
+wp option delete $(wp option list --search='edd_sl_*' --field=option_name)
+wp transient delete update_plugins
+wp plugin list --update=available
+```
+
+The last line should list your plugin with `update_version: X.Y.Z`.
+
+### Hard rules
+
+1. **Never lower the SDK's `cache_timeout`** below maybe 15 minutes. The cache exists for a reason — to avoid hammering the EDD-SL store from every WP cron tick across all installs. The button pattern lets *admins* opt in to a fresh check; the default TTL still protects the store from background polling.
+2. **Restrict the admin-post handler to `manage_options`** and require a nonce. Without those guards, anyone who knows the action name could force-flush + DoS your store via repeated admin-post hits.
+3. **The wildcard `edd_sl_\\_%` matches every SDK-managed plugin's cache on the site**, not just yours. That's usually fine (it just means *every* SDK-based plugin on this site polls fresh on the next admin page load), but say so plainly in your button's UI copy so admins aren't surprised when other premium plugins also re-check.
+
+### Upstream candidate
+
+This pattern is generally useful. A small SDK PR exposing a `EasyDigitalDownloads\Updater\Cache::flush( $slug )` static method, plus an opt-in "Refresh" link on the SDK's own license modal, would let every SDK consumer benefit without each one re-implementing the three-line flush. If you build the button for your own plugin and the SDK doesn't already have it by then, consider opening a PR.
+
+### Verifying this recipe
+
+This pattern was deployed in production on 2026-05-24 for a private WordPress plugin distributed via a self-hosted EDD store. Before the button: the customer's install showed the previous version even after WP-Cron + transient flushes — verified `wp option list --search='edd_sl_*'` returned 4 rows, all populated with stale `get_version` data. After the button click: 0 rows remained, the next admin page load fetched fresh data from the store, and the new version appeared in `Plugins → Updates`.

@@ -120,6 +120,10 @@ If all three pass, the SDK is functional. The remaining "Manage License" UI is s
 
 If the source repo of the plugin you are integrating is **private** and the EDD store points its `edd_download_files[].file` at the GitHub release asset URL, customers will see a `"download failed: Not Found"` on every update click — EDD-SL's `package_download` proxy hits GitHub server-side without auth and gets 404. [`PRO_TIPS.md`](PRO_TIPS.md) §1 has a full recipe to fix this with a signed CI webhook + a small mu-plugin on the store side. Implement it whenever the source repo is private. Use the recipe verbatim — including the HMAC-SHA256 signature pattern and the `update_post_meta()` step the EDD Git Updater plugin omits.
 
+## Helping admins see a freshly-published release
+
+The SDK caches `get_version` responses for **three hours** as a regular `wp_option` (not a transient). Right after publishing a new release, admin installs won't see the update banner until the cache expires — and the usual flush commands (`wp transient delete update_plugins`, the "Check again" link on update-core.php, manually triggering the `wp_update_plugins` cron) all miss this layer. Whenever you add the SDK to a plugin, also add a "Check for plugin updates now" button to its settings page that deletes the `edd_sl_*` options + transient + calls `wp_update_plugins( array(), true )`. [`PRO_TIPS.md`](PRO_TIPS.md) §2 has the full handler code with the security guards (admin-only, nonced). Skipping this step is a frequent source of support tickets along the lines of "you said the update is out but I don't see it."
+
 ## When the SDK isn't enough
 
 The SDK covers the standard licensing + auto-update workflow. If your product has unusual requirements, you may need to fall back to the [Software Licensing API](https://easydigitaldownloads.com/docs/software-licensing-api/) directly:
